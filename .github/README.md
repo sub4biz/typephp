@@ -22,7 +22,8 @@ Push 和手动运行检查所选提交的消息；PR 检查源分支的最新提
 
 ## `--sanitize`
 
-- 保留普通测试，额外运行 Linux x64 PHP 8.4/8.5 ZTS 的 ASan PHPT 作业。
+- 该轮 PHPT 只运行 Linux x64 PHP 8.4/8.5 ZTS 的 ASan 作业，不再重复运行普通
+  PHPT。未带此标记时只运行普通 PHPT；PHPUnit 和 EXT/LIB 作业保持不变。
 - 每个原生 PHPT 产物在编译、链接时通过 `--sanitize address` 启用
   AddressSanitizer；仅设置环境变量或传入测试工具旧有的 `--asan` 不会给产物插桩。
   编译时增加 C++ 调试符号和 frame pointer，方便定位；不自动启用会改变 PHP
@@ -42,7 +43,8 @@ Push 和手动运行检查所选提交的消息；PR 检查源分支的最新提
   单独保留并打印日志位置，不改变 PHPT 输出；同一报告中的真实错误及其他未知诊断
   仍然使测试失败，不跳过 Generator/Fiber 用例。ASan 作业无论成功与否，都会上传
   `phpt-sanitizer-reports-*` artifact，保留这些提示以供检查。
-- 发布包只来自普通测试作业，ASan 测试不会重复打包或上传发布产物。
+- 发布 tag 也只执行所选模式的 PHPT。测试通过后，使用原始运行库重新构建不含
+  sanitizer 的发布包，每个 PHP 版本只打包、上传一次。
 
 CI 使用 runner 的逻辑 CPU 数作为 PHPT worker 数；多个 worker 并行时，每个测试的
 嵌套编译及 Make/CMake/Cargo 环境保持单任务，避免并发相乘。顺序运行时，编译器

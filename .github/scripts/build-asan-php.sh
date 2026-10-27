@@ -10,6 +10,18 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$repo_root"
 work="$repo_root/build/asan-php"
 mkdir -p "$work/source" "$work/objects"
+show_failure_logs() {
+    local status=$?
+    local log
+    for log in "$work/configure.log" "$work/make.log" "$work/install.log"; do
+        if [[ -f "$log" ]]; then
+            echo "ASan runtime build diagnostic: $log" >&2
+            tail -n 60 "$log" >&2
+        fi
+    done
+    exit "$status"
+}
+trap show_failure_logs ERR
 php -n -r 'echo json_encode(["version"=>PHP_VERSION,"zts"=>PHP_ZTS,"debug"=>PHP_DEBUG,"extensions"=>get_loaded_extensions()]);' > "$work/host.json"
 php -r 'echo json_encode(get_loaded_extensions());' > "$work/host-loaded.json"
 php-config --configure-options > "$work/host-configure.txt"
