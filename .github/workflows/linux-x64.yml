@@ -17,6 +17,26 @@ env:
   COMPOSER_PROCESS_TIMEOUT: 0
 
 jobs:
+  test_options:
+    name: Read test options from commit
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      run_tests: ${{ steps.options.outputs.run_tests }}
+      phpt_matrix: ${{ steps.options.outputs.phpt_matrix }}
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@v4
+        with:
+          # pull_request normally checks out a synthetic merge commit. Read
+          # the source branch's message rather than that generated message.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Select test jobs
+        id: options
+        run: python3 .github/scripts/configure-test-options.py
+      - name: Test commit option selection
+        run: python3 -m unittest discover -s .github/scripts/tests
+
   build:
     # Compilation is always required; `--skip-tests` only suppresses downstream test jobs.
     name: Build - PHP ${{ matrix.php }} ZTS
@@ -165,10 +185,10 @@ jobs:
 
   phpunit:
     name: PHPUnit - PHP ${{ matrix.php }} ZTS
-    if: ${{ startsWith(github.ref, 'refs/tags/') || !contains(github.event.head_commit.message || '', '--skip-tests') }}
+    if: needs.test_options.outputs.run_tests == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 30
-    needs: build
+    needs: [build, test_options]
     strategy:
       fail-fast: false
       matrix:
@@ -259,10 +279,10 @@ jobs:
 
   integration:
     name: EXT/LIB - PHP ${{ matrix.php }} ZTS
-    if: ${{ startsWith(github.ref, 'refs/tags/') || !contains(github.event.head_commit.message || '', '--skip-tests') }}
+    if: needs.test_options.outputs.run_tests == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 45
-    needs: build
+    needs: [build, test_options]
     strategy:
       fail-fast: false
       matrix:
@@ -381,15 +401,14 @@ jobs:
           path: build/integration-*
 
   phpt:
-    name: PHPT - PHP ${{ matrix.php }} ZTS
-    if: ${{ startsWith(github.ref, 'refs/tags/') || !contains(github.event.head_commit.message || '', '--skip-tests') }}
+    name: PHPT - PHP ${{ matrix.php }} ZTS${{ matrix.sanitize && ' (ASan)' || '' }}
+    if: needs.test_options.outputs.run_tests == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 180
-    needs: build
+    needs: [build, test_options]
     strategy:
       fail-fast: false
-      matrix:
-        php: ["8.4", "8.5"]
+      matrix: ${{ fromJSON(needs.test_options.outputs.phpt_matrix) }}
     env:
       PHPX_HOME: ${{ github.workspace }}/third_party/phpx
       NO_INTERACTION: 1
@@ -496,15 +515,35 @@ jobs:
           cmake --version
           c++ --version
 
+      - name: Verify ASan reports fail PHPT
+        if: matrix.sanitize == 'address'
+        shell: bash
+        run: bash .github/scripts/check-phpt-asan.sh
+
+      - name: Upload ASan canary evidence
+        if: always() && matrix.sanitize == 'address'
+        uses: actions/upload-artifact@v4
+        with:
+          name: asan-canary-linux-x64-php-${{ matrix.php }}-zts
+          if-no-files-found: error
+          retention-days: 7
+          path: build/asan-canary
+
       - name: Run compiler PHPT suite with bootstrap compiler
         shell: bash
         env:
           TYPEPHP_OBSERVED_BINARY: ./tpc
           TYPEPHP_TPC_METRICS_FILE: ${{ github.workspace }}/build/phpt-metrics/tpc-invocations.tsv
+          TYPEPHP_PHPT_SANITIZE: ${{ matrix.sanitize }}
         run: |
           mkdir -p build/phpt-metrics
+          sanitizer_args=()
+          if [[ -n "${TYPEPHP_PHPT_SANITIZE}" ]]; then
+            sanitizer_args=(--sanitize "${TYPEPHP_PHPT_SANITIZE}")
+          fi
           .github/scripts/observe-command.sh build/phpt-metrics -- \
             php run-tests.php -q -j"${BUILD_JOBS}" --compiler .github/scripts/observe-tpc.sh \
+            "${sanitizer_args[@]}" \
             -w build/failed-tests.txt -W build/test-results.txt tests/compiler
 
       - name: Summarize PHPT compiler metrics
@@ -519,13 +558,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phpt-metrics-linux-x64-php-${{ matrix.php }}-zts
+          name: phpt-metrics-linux-x64-php-${{ matrix.php }}-zts${{ matrix.sanitize && '-asan' || '' }}
           if-no-files-found: warn
           retention-days: 14
           path: build/phpt-metrics
 
       - name: Package tested Linux compiler
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && !matrix.sanitize
         shell: bash
         run: |
           composer install --no-dev --prefer-dist --no-progress --classmap-authoritative
@@ -537,7 +576,7 @@ jobs:
           test "$(find . -maxdepth 1 -name 'tpc_v*_linux_x64_php${{ matrix.php }}.*-zts.tar.gz' -type f | wc -l)" -eq 1
 
       - name: Upload Linux release package
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && !matrix.sanitize
         uses: actions/upload-artifact@v4
         with:
           name: release-linux-x64-php-${{ matrix.php }}-zts
@@ -549,7 +588,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: phpt-failures-linux-x64-php-${{ matrix.php }}-zts
+          name: phpt-failures-linux-x64-php-${{ matrix.php }}-zts${{ matrix.sanitize && '-asan' || '' }}
           if-no-files-found: ignore
           retention-days: 7
           path: |
@@ -561,3 +600,4 @@ jobs:
             tests/compiler/**/*.diff
             tests/compiler/**/*.log
             tests/compiler/**/*.out
+            tests/compiler/**/*.sanitizer-*
