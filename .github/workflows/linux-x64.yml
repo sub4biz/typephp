@@ -499,12 +499,35 @@ jobs:
           echo "PHP_INI_SCAN_DIR=${php_ini_dir}" >> "${GITHUB_ENV}"
           php --ri phpy
 
+      - name: Build ASan-compatible PHP 8.4 embed runtime
+        if: matrix.sanitize == 'address' && matrix.php == '8.4'
+        shell: bash
+        run: |
+          sudo apt-get install --yes libxml2-dev libssl-dev zlib1g-dev libonig-dev libsqlite3-dev systemtap-sdt-dev
+          bash .github/scripts/build-asan-php.sh
+
+      - name: Upload ASan runtime build diagnostics
+        if: always() && matrix.sanitize == 'address' && matrix.php == '8.4'
+        uses: actions/upload-artifact@v4
+        with:
+          name: asan-runtime-linux-x64-php-${{ matrix.php }}-zts
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            build/asan-php/*.log
+            build/asan-php/*.json
+            build/asan-php/host-configure.txt
+
       - name: Configure native library path
         shell: bash
         run: |
           test -f "${PHPX_HOME}/lib/libphpx.so"
           test -f "${PHP_HOME}/lib/libphp.so"
-          echo "LD_LIBRARY_PATH=${PHPX_HOME}/lib:${PHP_HOME}/lib" >> "${GITHUB_ENV}"
+          library_path="${PHPX_HOME}/lib:${PHP_HOME}/lib"
+          if [[ -n "${TYPEPHP_ASAN_PHP_LIB_DIR:-}" ]]; then
+            library_path="${TYPEPHP_ASAN_PHP_LIB_DIR}:${library_path}"
+          fi
+          echo "LD_LIBRARY_PATH=${library_path}" >> "${GITHUB_ENV}"
 
       - name: Show build environment
         run: |
@@ -512,6 +535,9 @@ jobs:
           php -v
           php --ini
           ldd ./tpc | grep -E 'libphp(x)?[0-9.]*\.so'
+          if [[ -n "${TYPEPHP_ASAN_PHP_LIB_DIR:-}" ]]; then
+            ldd ./tpc | grep -F "${TYPEPHP_ASAN_PHP_LIB_DIR}/libphp.so"
+          fi
           cmake --version
           c++ --version
 
@@ -584,11 +610,11 @@ jobs:
           retention-days: 1
           path: tpc_v*_linux_x64_php${{ matrix.php }}.*-zts.tar.gz
 
-      - name: Upload PHPT failure artifacts
-        if: failure()
+      - name: Upload PHPT diagnostics
+        if: always() && (failure() || matrix.sanitize != '')
         uses: actions/upload-artifact@v4
         with:
-          name: phpt-failures-linux-x64-php-${{ matrix.php }}-zts${{ matrix.sanitize && '-asan' || '' }}
+          name: ${{ matrix.sanitize && 'phpt-sanitizer-reports' || 'phpt-failures' }}-linux-x64-php-${{ matrix.php }}-zts${{ matrix.sanitize && '-asan' || '' }}
           if-no-files-found: ignore
           retention-days: 7
           path: |

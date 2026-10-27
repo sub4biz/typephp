@@ -2655,8 +2655,12 @@ COMMAND $cmd
         foreach (glob($sanitizerPrefix . '.*') ?: [] as $report) {
             $diagnostic = file_get_contents($report);
             if (is_string($diagnostic) && $diagnostic !== '') {
-                $sanitizerFailure = true;
-                $out .= "\nSanitizer report: " . $report . "\n" . $diagnostic;
+                if (sanitizer_report_is_failure($diagnostic)) {
+                    $sanitizerFailure = true;
+                    $out .= "\nSanitizer report: " . $report . "\n" . $diagnostic;
+                } else {
+                    fwrite(STDERR, "ASan Fiber warning retained in " . $report . "\n");
+                }
             }
         }
     }
@@ -4588,6 +4592,22 @@ function parse_sanitize_option(string $value): array
     return $sanitizers;
 }
 
+function sanitizer_report_is_failure(string $diagnostic): bool
+{
+    // The prebuilt PHP runtime is not instrumented and does not notify ASan
+    // about Fiber stack switches. This specific informational warning is not
+    // a memory error. Keep its file, but do not alter the test's output.
+    // Any other content, including an error after the warning, remains fatal.
+    $remaining = preg_replace(
+        '~^==\d+==WARNING: ASan is ignoring requested __asan_handle_no_return:[^\n]*\n'
+        . 'False positive error reports may follow\n'
+        . 'For details see https://github\.com/google/sanitizers/issues/189(?:\n|$)~m',
+        '',
+        str_replace("\r\n", "\n", $diagnostic),
+    );
+    return trim($remaining ?? $diagnostic) !== '';
+}
+
 function configure_sanitizer_environment(array $env, array $sanitizers, ?string $reportPrefix = null): array
 {
     $log = $reportPrefix === null ? '' : ':log_path="' . str_replace('\\', '/', $reportPrefix) . '"';
@@ -4657,7 +4677,7 @@ function compile_php_file(string $file, string $compiler_args = ''): string
     }
     if ($aot_sanitize !== []) {
         // Append after --AOT_ARGS-- so per-test flags cannot turn this off.
-        $cmd .= ' --sanitize ' . escapeshellarg(implode(',', $aot_sanitize)) . ' --debug';
+        $cmd .= ' --sanitize ' . escapeshellarg(implode(',', $aot_sanitize));
     }
     foreach (get_aot_compiler_job_args() as $argument) {
         $compiler_output_args .= ' ' . escapeshellarg($argument);
