@@ -134,6 +134,25 @@ final class McpBinaryDriver
                 substr($text, 0, 200)
             );
 
+            // Keep the opening-tag regression on the real AOT stdio path,
+            // not only in the interpreted index tests. Explicit dirs point
+            // to a fixture outside the bundled default search roots.
+            self::write($pipes[0], [
+                'jsonrpc' => '2.0', 'id' => 40, 'method' => 'tools/call',
+                'params' => ['name' => 'get_symbol', 'arguments' => [
+                    'name' => 'typephpMcpOpeningTagFixture',
+                    'dirs' => [$repoRoot . '/tools/typephp-mcp/tests/fixtures'],
+                ]],
+            ]);
+            $reply = self::readReply($pipes[1], self::REPLY_TIMEOUT_SECONDS);
+            $text = is_array($reply) ? ($reply['result']['content'][0]['text'] ?? '') : '';
+            $checks[] = self::check(
+                'get_symbol finds a declaration after the opening tag',
+                str_contains($text, 'opening-tag.php:1')
+                    && str_contains($text, 'function typephpMcpOpeningTagFixture'),
+                substr($text, 0, 200)
+            );
+
             // 5. check_code on a missing file is a tool error (isError: true).
             self::write($pipes[0], [
                 'jsonrpc' => '2.0', 'id' => 5, 'method' => 'tools/call',

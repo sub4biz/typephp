@@ -206,6 +206,17 @@ final class CodeIndex
     }
 
     /**
+     * Match declarations after a leading PHP opening tag without changing the
+     * source lines or their numbers. Require tag whitespace so inline HTML
+     * such as <?phpfunction is not mistaken for a PHP declaration.
+     */
+    private static function declarationLine(string $line): string
+    {
+        $declaration = preg_replace('/^\s*<\?php(?:\s+|$)/i', '', $line);
+        return is_string($declaration) ? $declaration : $line;
+    }
+
+    /**
      * Find function/class/interface/trait/enum/const declarations of a short
      * name, honoring the file's namespace context.
      *
@@ -221,6 +232,7 @@ final class CodeIndex
         $namespaces = self::namespacesPerLine($lines);
         $hits = [];
         foreach ($lines as $index => $line) {
+            $line = self::declarationLine($line);
             if (preg_match($pattern, $line) !== 1 && preg_match($constPattern, $line) !== 1) {
                 continue;
             }
@@ -254,6 +266,7 @@ final class CodeIndex
         $namespaces = self::namespacesPerLine($lines);
         $hits = [];
         foreach ($lines as $index => $line) {
+            $line = self::declarationLine($line);
             if (preg_match($classPattern, $line) !== 1) {
                 continue;
             }
@@ -262,10 +275,11 @@ final class CodeIndex
             }
             $end = self::classBodyEnd($lines, $index);
             for ($i = $index + 1; $i < $end; $i++) {
-                if (preg_match($methodPattern, $lines[$i]) !== 1) {
+                $methodLine = self::declarationLine($lines[$i]);
+                if (preg_match($methodPattern, $methodLine) !== 1) {
                     continue;
                 }
-                $signature = trim($lines[$i]);
+                $signature = trim($methodLine);
                 if (strlen($signature) > 200) {
                     $signature = TextUtil::clip($signature, 200);
                 }
@@ -296,6 +310,7 @@ final class CodeIndex
         $braceDepth = 0;
         $blockDepth = -1;
         foreach ($lines as $index => $line) {
+            $line = self::declarationLine($line);
             $result[$index] = $current;
             if (preg_match('/^\s*namespace\s+([A-Za-z_][A-Za-z0-9_\\\\]*)\s*[;{]/', $line, $matches) === 1) {
                 $current = $matches[1];
@@ -324,15 +339,16 @@ final class CodeIndex
      */
     private static function classBodyEnd(array $lines, int $classIndex): int
     {
-        $classLine = $lines[$classIndex];
+        $classLine = self::declarationLine($lines[$classIndex]);
         $indent = strlen($classLine) - strlen(ltrim($classLine));
         $count = count($lines);
         for ($i = $classIndex + 1; $i < $count; $i++) {
-            $trimmed = ltrim($lines[$i]);
+            $line = self::declarationLine($lines[$i]);
+            $trimmed = ltrim($line);
             if ($trimmed === '' || $trimmed[0] === '#' || $trimmed[0] === '/') {
                 continue;
             }
-            $lineIndent = strlen($lines[$i]) - strlen($trimmed);
+            $lineIndent = strlen($line) - strlen($trimmed);
             if ($lineIndent > $indent) {
                 continue;
             }
@@ -787,8 +803,9 @@ final class CodeIndex
     private function enclosingDeclaration(array $lines, int $index): string
     {
         for ($i = $index; $i >= 0; $i--) {
-            if (preg_match('/^\s*(?:(?:abstract|final|readonly)\s+)?(?:class|interface|trait|enum|function)\s/', $lines[$i]) === 1) {
-                return trim($lines[$i]);
+            $line = self::declarationLine($lines[$i]);
+            if (preg_match('/^\s*(?:(?:abstract|final|readonly)\s+)?(?:class|interface|trait|enum|function)\s/', $line) === 1) {
+                return trim($line);
             }
         }
         return '';
