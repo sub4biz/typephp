@@ -2572,8 +2572,10 @@ $message
         }
     } else {
         $content = file_get_contents($test_file);
-        if (preg_match('/function main\(\)/', $content)) {
-            file_put_contents($test_file, $content. '<?php main(); ?>');
+        $main_call = get_test_main_call($content);
+        if ($main_call !== null) {
+            $prefix = str_ends_with(rtrim($content), '?>') ? '<?php ' : "\n";
+            file_put_contents($test_file, $content . $prefix . $main_call);
         }
     }
 
@@ -4627,6 +4629,40 @@ function configure_sanitizer_environment(array $env, array $sanitizers, ?string 
     return $env;
 }
 
+/**
+ * Find the global entrypoint without matching methods, comments or strings.
+ * TypePHP accepts main() or main(int $argc, array $argv).
+ */
+function get_test_main_call(string $source): ?string
+{
+    $tokens = array_values(array_filter(token_get_all($source), static function ($token): bool {
+        return !is_array($token) || !in_array($token[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true);
+    }));
+    $depth = 0;
+    $namespace = '';
+    $namespace_depth = 0;
+    foreach ($tokens as $index => $token) {
+        if ($depth === 0 && is_array($token) && $token[0] === T_NAMESPACE) {
+            $namespace = '';
+            for ($next = $index + 1; isset($tokens[$next]) && $tokens[$next] !== '{' && $tokens[$next] !== ';'; $next++) {
+                $namespace .= is_array($tokens[$next]) ? $tokens[$next][1] : $tokens[$next];
+            }
+            $namespace_depth = ($tokens[$next] ?? null) === '{' ? 1 : 0;
+        } elseif ($token === '{' || (is_array($token) && in_array($token[0], [T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES], true))) {
+            $depth++;
+        } elseif ($token === '}') {
+            $depth--;
+        } elseif ($depth === $namespace_depth && $namespace === '' && is_array($token) && $token[0] === T_FUNCTION) {
+            $name = $tokens[$index + 1] ?? null;
+            if (is_array($name) && $name[0] === T_STRING && strcasecmp($name[1], 'main') === 0 && ($tokens[$index + 2] ?? null) === '(') {
+                $call = ($tokens[$index + 3] ?? null) === ')' ? 'main();' : 'main($argc, $argv);';
+                return $namespace_depth === 1 ? 'namespace { ' . $call . ' }' : $call;
+            }
+        }
+    }
+    return null;
+}
+
 function compile_php_file(string $file, string $compiler_args = ''): string
 {
     global $compiler_path, $workerID, $aot_parallel_root, $aot_sanitize;
@@ -4655,7 +4691,7 @@ function compile_php_file(string $file, string $compiler_args = ''): string
         $binary_file = $binary_name;
     }
 
-    if (!str_contains($data, 'function main()')) {
+    if (get_test_main_call($data) === null) {
         file_put_contents($file, "<?php\nfunction main() {\n" . substr($data, 5, -2) . "\n}\n");
     }
 
